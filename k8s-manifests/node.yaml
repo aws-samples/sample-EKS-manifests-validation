@@ -1,0 +1,129 @@
+### Note: This files are created to show the errors in the staticcode analysis phase during KubeLinter and Kubesec scan.
+apiVersion: v1
+kind: Pod
+metadata:
+  creationTimestamp: "2025-05-23T10:43:11Z"
+  name: node
+  annotations:
+    checkov.io/skip1: CKV2_K8S_6
+    checkov.io/skip2: CKV_K8S_8
+    checkov.io/skip3: CKV_K8S_9
+    checkov.io/skip4: CKV_K8S_11
+    checkov.io/skip5: CKV_K8S_13
+    checkov.io/skip6: CKV_K8S_15
+    checkov.io/skip7: CKV_K8S_16
+    checkov.io/skip8: CKV_K8S_20
+    checkov.io/skip9: CKV_K8S_21
+    checkov.io/skip10: CKV_K8S_22
+    checkov.io/skip11: CKV_K8S_23
+    checkov.io/skip12: CKV_K8S_28
+    checkov.io/skip13: CKV_K8S_31
+    checkov.io/skip14: CKV_K8S_37
+    checkov.io/skip15: CKV_K8S_38
+    checkov.io/skip16: CKV_K8S_40
+    checkov.io/skip17: CKV_K8S_43
+  namespace: default
+  resourceVersion: "1132"
+  uid: 340c1af8-c77e-4f1d-961e-79737db33959
+spec:
+  containers:
+  - image: gcr.io/google-samples/node-hello:1.0
+    imagePullPolicy: IfNotPresent
+    name: node
+    resources: {}
+    securityContext:
+      privileged: true
+      readOnlyRootFilesystem: false
+    terminationMessagePath: /dev/termination-log
+    terminationMessagePolicy: File
+    volumeMounts:
+    - mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+      name: kube-api-access-9kgww
+      readOnly: true
+  dnsPolicy: ClusterFirst
+  enableServiceLinks: true
+  nodeName: controlplane
+  preemptionPolicy: PreemptLowerPriority
+  priority: 0
+  restartPolicy: Always
+  schedulerName: default-scheduler
+  securityContext: {}
+  serviceAccount: default
+  serviceAccountName: default
+  terminationGracePeriodSeconds: 30
+  tolerations:
+  - effect: NoExecute
+    key: node.kubernetes.io/not-ready
+    operator: Exists
+    tolerationSeconds: 300
+  - effect: NoExecute
+    key: node.kubernetes.io/unreachable
+    operator: Exists
+    tolerationSeconds: 300
+  volumes:
+  - name: kube-api-access-9kgww
+    projected:
+      defaultMode: 420
+      sources:
+      - serviceAccountToken:
+          expirationSeconds: 3607
+          path: token
+      - configMap:
+          items:
+          - key: ca.crt
+            path: ca.crt
+          name: kube-root-ca.crt
+      - downwardAPI:
+          items:
+          - fieldRef:
+              apiVersion: v1
+              fieldPath: metadata.namespace
+            path: namespace
+status:
+  conditions:
+  - lastProbeTime: null
+    lastTransitionTime: "2025-05-23T10:43:11Z"
+    status: "False"
+    type: PodReadyToStartContainers
+  - lastProbeTime: null
+    lastTransitionTime: "2025-05-23T10:43:11Z"
+    status: "True"
+    type: Initialized
+  - lastProbeTime: null
+    lastTransitionTime: "2025-05-23T10:43:11Z"
+    message: 'containers with unready status: [node]'
+    reason: ContainersNotReady
+    status: "False"
+    type: Ready
+  - lastProbeTime: null
+    lastTransitionTime: "2025-05-23T10:43:11Z"
+    message: 'containers with unready status: [node]'
+    reason: ContainersNotReady
+    status: "False"
+    type: ContainersReady
+  - lastProbeTime: null
+    lastTransitionTime: "2025-05-23T10:43:11Z"
+    status: "True"
+    type: PodScheduled
+  containerStatuses:
+  - image: gcr.io/google-samples/node-hello:1.0
+    imageID: ""
+    lastState: {}
+    name: node
+    ready: false
+    restartCount: 0
+    started: false
+    state:
+      waiting:
+        reason: ContainerCreating
+    volumeMounts:
+    - mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+      name: kube-api-access-9kgww
+      readOnly: true
+      recursiveReadOnly: Disabled
+  hostIP: 192.168.233.150
+  hostIPs:
+  - ip: 192.168.233.150
+  phase: Pending
+  qosClass: BestEffort
+  startTime: "2025-05-23T10:43:11Z"

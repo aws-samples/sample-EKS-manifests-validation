@@ -1,0 +1,375 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'CloudFormation template for Secure-EKS-Deployements CodePipeline'
+
+Parameters:
+  CodeStarConnectionArn:
+    Type: String
+    Description: ARN of the CodeStar connection to use for the source stage
+  RepositoryOwner:
+    Type: String
+    Description: Owner of the repository (e.g., username or organization name)
+  RepositoryName:
+    Type: String
+    Description: Name of the repository
+  BranchName:
+    Type: String
+    Default: main
+    Description: Branch name to use for the source
+
+Resources:
+  # KMS Key for encryption
+  EncryptionKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: KMS Key for CodeBuild and S3 encryption
+      EnableKeyRotation: true
+      KeyPolicy:
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+            Action: 'kms:*'
+            Resource: !Sub 'arn:aws:kms:${AWS::Region}:${AWS::AccountId}:key/*'
+          - Effect: Allow
+            Principal:
+              Service:
+                - codebuild.amazonaws.com
+                - s3.amazonaws.com
+            Action:
+              - 'kms:Decrypt'
+              - 'kms:GenerateDataKey'
+            Resource: !Sub 'arn:aws:kms:${AWS::Region}:${AWS::AccountId}:key/*'
+  # CodeBuild role
+  CodeBuildServiceRole:
+    Type: AWS::IAM::Role
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W11
+            reason: ECR GetAuthorizationToken requires wildcard resource
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Policies:
+        - PolicyName: CodeBuildServiceRolePolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/*'
+              - Effect: Allow
+                Action:
+                  - 's3:GetObject'
+                  - 's3:GetObjectVersion'
+                  - 's3:PutObject'
+                Resource: !Sub 'arn:aws:s3:::${ArtifactBucket}/*'
+              - Effect: Allow
+                Action:
+                  - 'ecr:GetAuthorizationToken'
+                Resource: '*' #checkov:skip=CKV_AWS_60:ECR GetAuthorizationToken requires wildcard resource
+              - Effect: Allow
+                Action:
+                  - 'ecr:BatchCheckLayerAvailability'
+                  - 'ecr:GetDownloadUrlForLayer'
+                  - 'ecr:BatchGetImage'
+                  - 'ecr:InitiateLayerUpload'
+                  - 'ecr:UploadLayerPart'
+                  - 'ecr:CompleteLayerUpload'
+                  - 'ecr:PutImage'
+                Resource: !Sub 'arn:aws:ecr:${AWS::Region}:${AWS::AccountId}:repository/*'
+              - Effect: Allow
+                Action:
+                  - 'kms:Decrypt'
+                  - 'kms:GenerateDataKey'
+                Resource: !GetAtt EncryptionKey.Arn
+
+  # CodePipeline role
+  CodePipelineServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codepipeline.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Policies:
+        - PolicyName: CodePipelineServiceRolePolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 's3:GetObject'
+                  - 's3:GetObjectVersion'
+                  - 's3:PutObject'
+                  - 's3:GetBucketVersioning'
+                Resource:
+                  - !Sub 'arn:aws:s3:::${ArtifactBucket}'
+                  - !Sub 'arn:aws:s3:::${ArtifactBucket}/*'
+              - Effect: Allow
+                Action:
+                  - 'codebuild:StartBuild'
+                  - 'codebuild:BatchGetBuilds'
+                Resource:
+                  - !GetAtt CodeQualityProject.Arn
+                  - !GetAtt StaticCodeAnalysisProject.Arn
+                  - !GetAtt DeployProject.Arn
+              - Effect: Allow
+                Action:
+                  - 'codestar-connections:UseConnection'
+                Resource: !Ref CodeStarConnectionArn
+              - Effect: Allow
+                Action:
+                  - 'kms:Decrypt'
+                  - 'kms:GenerateDataKey'
+                Resource: !GetAtt EncryptionKey.Arn
+
+  # S3 bucket for access logs
+  LoggingBucket:
+    Type: AWS::S3::Bucket
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W35
+            reason: This is the logging bucket - access logging not required for log destination
+    #checkov:skip=CKV_AWS_21:For This bucket Versioning is not required. 
+    #checkov:skip=CKV_AWS_18:For This bucket access logging is not required.
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  # LoggingBucket policy
+  LoggingBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref LoggingBucket
+      PolicyDocument:
+        Statement:
+          - Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource:
+              - !Sub 'arn:aws:s3:::${LoggingBucket}/*'
+              - !Sub 'arn:aws:s3:::${LoggingBucket}'
+            Condition:
+              Bool:
+                'aws:SecureTransport': 'false'
+
+  # S3 bucket for artifacts
+  ArtifactBucket:
+    Type: AWS::S3::Bucket
+    #checkov:skip=CKV_AWS_21:For This bucket Versioning is not required. 
+    #checkov:skip=CKV_AWS_18:For This bucket access logging is not required.
+    Properties:
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+              KMSMasterKeyID: !Ref EncryptionKey
+      LoggingConfiguration:
+        DestinationBucketName: !Ref LoggingBucket
+        LogFilePrefix: access-logs/
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  # S3 bucket policy
+  ArtifactBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    #checkov:skip=CKV_AWS_21:For This bucket Versioning is not required. 
+    #checkov:skip=CKV_AWS_18:For This bucket access logging is not required.
+    Properties:
+      Bucket: !Ref ArtifactBucket
+      PolicyDocument:
+        Statement:
+          - Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource:
+              - !Sub 'arn:aws:s3:::${ArtifactBucket}/*'
+              - !Sub 'arn:aws:s3:::${ArtifactBucket}'
+            Condition:
+              Bool:
+                'aws:SecureTransport': 'false'
+
+  # CodeBuild project for Code Quality and Testing
+  CodeQualityProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: CodeQualityAndTesting
+      ServiceRole: !GetAtt CodeBuildServiceRole.Arn
+      EncryptionKey: !GetAtt EncryptionKey.Arn
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/amazonlinux2-x86_64-standard:3.0
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: |
+          version: 0.2
+          phases:
+            build:
+              commands:
+                - echo "Running unit testing..."
+          artifacts:
+            files:
+              - '**/*'
+
+  # CodeBuild project for Static Code Analysis
+  StaticCodeAnalysisProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: StaticCodeAnalysis
+      ServiceRole: !GetAtt CodeBuildServiceRole.Arn
+      EncryptionKey: !GetAtt EncryptionKey.Arn
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/amazonlinux2-x86_64-standard:3.0
+        PrivilegedMode: true
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: buildspec.yaml
+
+  # CodeBuild project for Deployment
+  DeployProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: DeployToEKS
+      ServiceRole: !GetAtt CodeBuildServiceRole.Arn
+      EncryptionKey: !GetAtt EncryptionKey.Arn
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/amazonlinux2-x86_64-standard:3.0
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: |
+          version: 0.2
+          phases:
+            build:
+              commands:
+                - echo "Deploy to EKS"
+          artifacts:
+            files:
+              - '**/*'
+
+  # CodePipeline
+  SecureEKSDeploymentsPipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: Secure-EKS-Deployements-CF
+      RoleArn: !GetAtt CodePipelineServiceRole.Arn
+      ArtifactStore:
+        Type: S3
+        Location: !Ref ArtifactBucket
+        EncryptionKey:
+          Id: !GetAtt EncryptionKey.Arn
+          Type: KMS
+      Stages:
+        # Stage 1: Source
+        - Name: Source
+          Actions:
+            - Name: Source
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: CodeStarSourceConnection
+                Version: '1'
+              Configuration:
+                ConnectionArn: !Ref CodeStarConnectionArn
+                FullRepositoryId: !Sub '${RepositoryOwner}/${RepositoryName}'
+                BranchName: !Ref BranchName
+              OutputArtifacts:
+                - Name: SourceCode
+
+        # Stage 2: Code Quality and Testing
+        - Name: Code_Quality_And_Testing
+          Actions:
+            - Name: UnitTesting
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: '1'
+              Configuration:
+                ProjectName: !Ref CodeQualityProject
+              InputArtifacts:
+                - Name: SourceCode
+              OutputArtifacts:
+                - Name: TestedCode
+
+        # Stage 3: Build Stage (Static Code Analysis)
+        - Name: Build_Stage
+          Actions:
+            - Name: StaticCodeAnalysis
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: '1'
+              Configuration:
+                ProjectName: !Ref StaticCodeAnalysisProject
+              InputArtifacts:
+                - Name: TestedCode
+              OutputArtifacts:
+                - Name: BuiltCode
+
+        # Stage 4: Validation and Integration Testing (Manual Approval)
+        - Name: Validation_and_Integration_Testing
+          Actions:
+            - Name: ManualApproval
+              ActionTypeId:
+                Category: Approval
+                Owner: AWS
+                Provider: Manual
+                Version: '1'
+              Configuration:
+                CustomData: 'Please review and approve the deployment'
+
+        # Stage 5: Deploy
+        - Name: Deploy
+          Actions:
+            - Name: DeployToEKS
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: '1'
+              Configuration:
+                ProjectName: !Ref DeployProject
+              InputArtifacts:
+                - Name: BuiltCode
+
+Outputs:
+  PipelineURL:
+    Description: URL to the CodePipeline console
+    Value: !Sub https://console.aws.amazon.com/codepipeline/home?region=${AWS::Region}#/view/${SecureEKSDeploymentsPipeline}

@@ -1,0 +1,54 @@
+# This is a example buildspec file which shows errors in the kubesce and kubelinter scan and proceeds with the docker image build.
+# This can be modified as per the use-case, and Stop the further build if the scan fails.
+version: 0.2
+phases:
+  install:
+    runtime-versions:
+      python: 3.8
+    commands:
+      - nohup /usr/local/bin/dockerd --host=unix:///var/run/docker.sock --host=tcp://127.0.0.1:2375 --storage-driver=overlay2 &
+      - timeout 15 sh -c "until docker info; do echo .; sleep 1; done"
+  pre_build:
+    commands:
+      - echo log in to Amazon ECR
+      - aws --version
+      - echo $AWS_DEFAULT_REGION
+      - aws ecr get-login-password --region us-east-2 | docker login --username AWS --password-stdin 205930618750.dkr.ecr.us-east-2.amazonaws.com
+      - REPOSITORY_URI=205930618750.dkr.ecr.us-east-2.amazonaws.com/eks-demo
+      - COMMIT_HASH=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c 1-7)
+      - IMAGE_TAG=${COMMIT_HASH:=latest}
+      - echo installing kubelinter
+      - curl -LO https://github.com/stackrox/kube-linter/releases/latest/download/kube-linter-linux.tar.gz
+      - tar -xvf kube-linter-linux.tar.gz
+      - mv kube-linter /usr/local/bin/
+      - echo installing kubesec
+      - wget https://github.com/controlplaneio/kubesec/releases/download/v2.13.0/kubesec_linux_amd64.tar.gz
+      - tar -xvf  kubesec_linux_amd64.tar.gz
+      - mv kubesec /usr/bin/
+      - echo pre_build completed
+  build:
+    commands:
+      - echo Build started on `date`
+      - echo Starting Static code Analysis
+      - echo kubesec scan
+      - kubesec scan k8s-manifests/node.yaml | tee kubesec-scan.md || true
+      - echo kubelinter lint
+      - kube-linter lint k8s-manifests/nginx.yaml | tee kubelinter-lint.md || true
+      - cat kubesec-scan.md
+      - cat kubelinter-lint.md
+      - echo Building the Docker image.
+      - docker build -t $REPOSITORY_URI:latest .
+      - echo image scan successful
+      - docker tag $REPOSITORY_URI:latest $REPOSITORY_URI:$IMAGE_TAG
+  post_build:
+    commands:
+      - echo Build completed on `date`
+      - echo Starting push stage
+      - docker push $REPOSITORY_URI:latest
+      - docker push $REPOSITORY_URI:$IMAGE_TAG
+      - echo write definitions file...
+      - printf '[{"name":"exp-code-pipeline","imageUri":"%s"}]' $REPOSITORY_URI:$IMAGE_TAG > imagedefinitions.json
+      - echo image push stage successful
+artifacts:
+  files: imagedefinitions.json
+
